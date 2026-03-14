@@ -8,6 +8,10 @@ final class StatusBarController: NSObject, NetworkManagerDelegate {
     private var switchAnimationTimer: Timer?
     private var switchAnimationFrame: Int = 0
     private var errorFlashTimer: Timer?
+    private var autoSwitchEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "autoSwitch") }
+        set { UserDefaults.standard.set(newValue, forKey: "autoSwitch") }
+    }
 
     private enum ToggleState: Equatable {
         case wifi
@@ -39,7 +43,31 @@ final class StatusBarController: NSObject, NetworkManagerDelegate {
     // MARK: - NetworkManagerDelegate
 
     func networkStateDidChange(_ state: NetworkState) {
+        let previousState = currentState
         updateUI(with: state)
+
+        guard autoSwitchEnabled, !isSwitching else { return }
+
+        let wasEthernet = previousState.ethernetAvailable
+        let isEthernet = state.ethernetAvailable
+
+        if wasEthernet && !isEthernet {
+            // Ethernet disappeared (undocked) → switch to WiFi
+            isSwitching = true
+            setSwitchingState()
+            networkManager.switchToWiFi { [weak self] success in
+                self?.isSwitching = false
+                if !success { self?.flashError() }
+            }
+        } else if !wasEthernet && isEthernet {
+            // Ethernet appeared (docked) → switch to Ethernet
+            isSwitching = true
+            setSwitchingState()
+            networkManager.switchToEthernet { [weak self] success in
+                self?.isSwitching = false
+                if !success { self?.flashError() }
+            }
+        }
     }
 
     // MARK: - Click handling
@@ -144,6 +172,13 @@ final class StatusBarController: NSObject, NetworkManagerDelegate {
         if case .ethernet = currentState.activeConnection { ethSwitchItem.isEnabled = false }
         if !currentState.ethernetAvailable { ethSwitchItem.isEnabled = false }
         menu.addItem(ethSwitchItem)
+
+        menu.addItem(.separator())
+
+        let autoItem = NSMenuItem(title: "Switch auto (dock/undock)", action: #selector(toggleAutoSwitch), keyEquivalent: "")
+        autoItem.target = self
+        autoItem.state = autoSwitchEnabled ? .on : .off
+        menu.addItem(autoItem)
 
         menu.addItem(.separator())
 
@@ -352,6 +387,10 @@ final class StatusBarController: NSObject, NetworkManagerDelegate {
                 self?.showAlert("Impossible de basculer vers Ethernet.")
             }
         }
+    }
+
+    @objc private func toggleAutoSwitch() {
+        autoSwitchEnabled.toggle()
     }
 
     @objc private func quit() {
